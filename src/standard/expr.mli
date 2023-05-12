@@ -1037,6 +1037,9 @@ module Term : sig
       val real : string -> t
       (** Real literals. *)
 
+      val root_of_with_order : string list -> string -> t
+      (** Algebraic number *)
+
       val minus : t
       (** Real unary minus/negation. *)
 

@@ -2072,6 +2072,14 @@ module Term = struct
             mk' ~builtin:(Builtin.Decimal s) s [] [] Ty.real
           )
 
+      let root_of_with_order =
+        let cache = Hashtbl.create 113 in
+        fun coeffs order ->
+            with_cache ~cache (fun (coeffs,order) ->
+                mk' ~builtin:(Builtin.Root_of_with_order {coeffs;order}) "algebraic" [] [] Ty.real
+              ) (coeffs,order)
+   
+
       let minus = mk'
           ~pos:Pretty.Prefix ~name:"-" ~builtin:(Builtin.Minus `Real)
            "Minus" [] [Ty.real] Ty.real
@@ -3244,6 +3252,8 @@ module Term = struct
 
   module Real = struct
     let mk = real
+    let root_of_with_order coeffs order =
+      apply_cst (Const.Real.root_of_with_order coeffs order) [] []
     let div' = Const.Real.div
     let minus t = apply_cst Const.Real.minus [] [t]
     let add a b = apply_cst Const.Real.add [] [a; b]

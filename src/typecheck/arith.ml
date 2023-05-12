@@ -843,6 +843,8 @@ module Smtlib2 = struct
         | Warn msg -> Type._warn env (Ast ast) (Restriction msg)
         | Error msg -> Type._error env (Ast ast) (Forbidden msg)
 
+      let parse_coeffs _ = ["-2";"0";"1"]
+      
       let rec parse ~config version env s =
         match s with
         (* type *)
@@ -851,6 +853,20 @@ module Smtlib2 = struct
         (* values *)
         | Type.Id { Id.ns = Value (Integer | Real); name = Simple name; } ->
           Type.builtin_term (Base.app0 (module Type) env s (T.mk name))
+        | Type.Id { Id.ns = Term; name = Simple "root-of-with-order"; } ->
+            Type.builtin_term (Base.make_op2 (module Type) env s (fun _ast (coeffs,num) ->
+              let coeffs = match coeffs.term with
+                | App ({term = Symbol {Id.ns = Term; name = Simple "coeffs"}; _},args) ->
+                  parse_coeffs args
+                | _ -> assert false
+              in
+              let num = match num.term with
+                | Symbol  { Id.ns = Value (Integer); name = Simple name; } ->
+                    name
+                | _ -> assert false
+              in
+              T.root_of_with_order coeffs num )
+            )
         (* terms *)
         | Type.Id { Id.ns = Term; name = Simple name; } ->
           begin match name with

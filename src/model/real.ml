@@ -160,7 +160,25 @@ module A = struct
 
   let positive_pow q n =
     !!(A.pow ~ctx (to_a q) n)
-end
+
+  let from_order poly order =
+    let poly = Flint.FMPZ_poly.create poly in
+    let roots = Calcium.QQBAR.from_roots poly in
+    !!(Calcium.CA.from_qqbar ~ctx (Stdlib.Array.get roots order))
+
+    let _from_enclosure poly min max =
+      let poly = Flint.FMPZ_poly.create poly in
+      let roots = Calcium.QQBAR.from_roots poly in
+      let roots = Stdlib.Array.map (Calcium.CA.from_qqbar ~ctx) roots in
+      let inside r = Calcium.CA.compare_q ~ctx r min >= 0 &&
+         Calcium.CA.compare_q ~ctx r max <= 0
+      in
+      let roots = List.filter inside (Stdlib.Array.to_list roots) in
+      match roots with
+      | [] -> invalid_arg "No roots found in the enclosure"
+      | [r] -> r
+      | _ -> invalid_arg "The roots are not uniq in the enclosure"
+  end
 
 
 
@@ -229,6 +247,10 @@ let op2_zero ~eval ~env ~cst f =
 let builtins ~eval env (cst : Dolmen.Std.Expr.Term.Const.t) =
   match cst.builtin with
   | B.Decimal i -> Some (mk (A.of_string i))
+  | B.Root_of_with_order {coeffs; order} ->
+    let coeffs = Stdlib.Array.of_list (List.map Z.of_string coeffs) in
+    let order = int_of_string order in
+    Some (mk (A.from_order coeffs order))
   | B.Lt `Real -> cmp ~cst A.lt
   | B.Gt `Real -> cmp ~cst A.gt
   | B.Geq `Real -> cmp ~cst A.ge

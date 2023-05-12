@@ -193,6 +193,7 @@ type _ t +=
       representation for the real number [2].
 
       Real literals can be parsed using ZArith's [Q.of_string]. *)
+  | Root_of_with_order of { coeffs: string list; order: string }
   | Lt of [ `Int | `Rat | `Real ]
   (** [Lt: {a=(Int|Rational|Real)} a -> a -> Prop]:
       strict comparison (less than) on numbers

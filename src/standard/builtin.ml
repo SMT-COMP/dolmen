@@ -66,6 +66,7 @@ type _ t +=
   | Int | Integer of string
   | Rat | Rational of string
   | Real | Decimal of string
+  | Root_of_with_order of { coeffs: string list; order: string }
   | Lt of int_rat_real | Leq of int_rat_real
   | Gt of int_rat_real | Geq of int_rat_real
   | Minus of int_rat_real

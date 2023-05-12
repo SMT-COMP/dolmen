@@ -1,0 +1,4 @@
+sat
+(
+(define-fun sqrt2 () Real (root-of-with-order (coeffs (- 2) 0 1) 1))
+)
