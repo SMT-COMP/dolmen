@@ -165,6 +165,10 @@ type _ t +=
 (** {2 Arithmetic Builtins} *)
 (*  ************************************************************************* *)
 
+type algebraic =
+| Ordered_root of { coeffs : string list; order : string; }
+| Enclosed_root of { coeffs : string list; min : string * string; max: string * string; }
+
 type _ t +=
   | Int
   (** [Int: ttype] the type for signed integers of arbitrary precision. *)
@@ -193,7 +197,7 @@ type _ t +=
       representation for the real number [2].
 
       Real literals can be parsed using ZArith's [Q.of_string]. *)
-  | Root_of_with_order of { coeffs: string list; order: string }
+  | Algebraic of algebraic
   | Lt of [ `Int | `Rat | `Real ]
   (** [Lt: {a=(Int|Rational|Real)} a -> a -> Prop]:
       strict comparison (less than) on numbers
