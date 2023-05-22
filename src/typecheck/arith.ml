@@ -888,7 +888,7 @@ module Smtlib2 = struct
         (* values *)
         | Type.Id { Id.ns = Value (Integer | Real); name = Simple name; } ->
           Type.builtin_term (Base.app0 (module Type) env s (T.mk name))
-        | Type.Id { Id.ns = Term; name = Simple "root-of-with-order"; } ->
+        | Type.Id { Id.ns = Term; name = Simple ("root-of-with-order"|"root-of-with-ordering"); } ->
           Type.builtin_term (Base.make_op2 (module Type) env s (fun _ast (coeffs,num) ->
             let coeffs = parse_coeffs env coeffs in
             let num = match num.term with
