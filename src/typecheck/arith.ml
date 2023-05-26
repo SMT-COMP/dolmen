@@ -844,12 +844,24 @@ module Smtlib2 = struct
         | Error msg -> Type._error env (Ast ast) (Forbidden msg)
 
       let parse_int env ast =
-        match ast.Term.term with
+        let rec is_int i s =
+          String.length s <= i ||
+          begin
+            match s.[i] with
+            | '-' -> i = 0
+            | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' -> true
+            | _ -> false
+          end
+          || is_int (i+1) s
+        in
+      match ast.Term.term with
         | Symbol  { Id.ns = Value (Integer); name = Simple name; } ->
           name
         | App({term = Symbol { Id.ns = Term; name = Simple "-"; };_},
               [{term=Symbol  { Id.ns = Value (Integer); name = Simple name; };_}]) ->
             "-"^name
+        | Symbol  { Id.ns = Term; name = Simple name; } when is_int 0 name ->
+          name
         | _ ->
           Type._error env (Ast ast) (Forbidden "An integer constant is expected")
 
