@@ -898,7 +898,7 @@ module Smtlib2 = struct
             in
             T.algebraic_ordered_root coeffs num )
           )
-          | Type.Id { Id.ns = Term; name = Simple "root-of-with-enclosure"; } ->
+          | Type.Id { Id.ns = Term; name = Simple ("root-of-with-enclosure"|"root-of-with-interval"); } ->
             Type.builtin_term (Base.make_op3 (module Type) env s (fun _ast (coeffs,min,max) ->
               let coeffs = parse_coeffs env coeffs in
               let min = parse_rat env min in
