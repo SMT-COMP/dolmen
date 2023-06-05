@@ -196,12 +196,18 @@ module Smtlib2 = struct
             Type.builtin_term (Base.term_app1 (module Type) env s F.to_real)
           | "fp.to_ubv" ->
             begin match version with
-              | `Response _ -> `Reserved (`Term_cst (meta_to_bv F.to_ubv'))
+              | `Response _ ->
+                `Reserved (
+                  "completing interpretation of fp.to_bv in models",
+                  `Term_cst (meta_to_bv F.to_ubv'))
               | `Script _ -> `Not_found
             end
           | "fp.to_sbv" ->
             begin match version with
-              | `Response _ -> `Reserved (`Term_cst (meta_to_bv F.to_sbv'))
+              | `Response _ ->
+                `Reserved (
+                  "completing interpretation of fp.to_sbv in models",
+                  `Term_cst (meta_to_bv F.to_sbv'))
               | `Script _ -> `Not_found
             end
           | _ -> `Not_found
