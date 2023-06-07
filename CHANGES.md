@@ -32,7 +32,7 @@ next
 - Rename theory-specific configuration to `config` (instead of
   `arith`, `arrays`, etc..) (PR#142)
 - Add printing function for logics (PR#142)
-
+- Add a proper reason for reserved builtins (PR#155)
 
 ### Loop
 

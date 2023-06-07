@@ -133,8 +133,8 @@ let print_reason ?(already=false) fmt r =
   match (r : T.reason) with
   | Builtin ->
     Format.fprintf fmt "is%a defined by a builtin theory" pp_already ()
-  | Reserved ->
-    Format.fprintf fmt "is reserved for model definitions"
+  | Reserved reason ->
+    Format.fprintf fmt "is reserved for %a" Format.pp_print_text reason
   | Bound (file, ast) ->
     Format.fprintf fmt "was%a bound at %a"
       pp_already () Dolmen.Std.Loc.fmt_pos (Dolmen.Std.Loc.loc file ast.loc)
@@ -923,10 +923,11 @@ let empty_pop =
 
 let reserved =
   Report.Error.mk ~code ~mnemonic:"reserved"
-    ~message:(fun fmt id ->
+    ~message:(fun fmt (id, reason) ->
         Format.fprintf fmt
-          "@[<hov>Reserved: %a is reserved to define corner cases for models.@ @[<hov>%a@]"
-          (pp_wrap Dolmen.Std.Id.print) id Format.pp_print_text
+          "@[<hov>Reserved: %a is reserved for %a.@ @[<hov>%a@]"
+          (pp_wrap Dolmen.Std.Id.print) id
+          Format.pp_print_text reason Format.pp_print_text
           "Therefore, the definition of the model corner case would take \
            priority and prevent defining a value for this constant.")
     ~name:"Shadowing of reserved identifier" ()
@@ -1077,12 +1078,17 @@ module Typer(State : State.S) = struct
       -> true
     | _ -> false
 
+  let typing_logic input =
+    match (input : input) with
+    | `Logic _ -> true
+    | `Response _ -> false
+
   let report_warning ~input st (T.Warning (env, fragment, w)) =
     let loc = T.fragment_loc env fragment in
     match w with
-    | T.Shadowing (id, `Reserved `Term, _)
-      when State.get_or ~default:false check_model st ->
-      error ~input ~loc st reserved id
+    | T.Shadowing (id, `Reserved reason, _)
+      when typing_logic input && State.get_or ~default:false check_model st ->
+      error ~input ~loc st reserved (id, reason)
 
     (* typer warnings that are actually errors given some languages spec *)
     | T.Shadowing (id, ((`Builtin `Term | `Not_found) as old), `Variable _)
@@ -1651,8 +1657,8 @@ module Typer(State : State.S) = struct
     let file_loc = file_loc_of_input input in
     let loc : Dolmen.Std.Loc.full = { file = file_loc; loc; } in
     match lang_of_input input with
-    | `Logic ICNF -> st
-    | `Logic Dimacs -> st
+    | `Logic ICNF -> st, Dolmen_type.Logic.Auto
+    | `Logic Dimacs -> st, Dolmen_type.Logic.Auto
     | `Logic Smtlib2 _ ->
       let logic =
         match State.get smtlib2_forced_logic st with
@@ -1666,9 +1672,12 @@ module Typer(State : State.S) = struct
           let st = warn ~input ~loc st unknown_logic s in
           st, Dolmen_type.Logic.Smtlib2.all
       in
-      set_logic_aux ~input ~loc st (Smtlib2 l)
+      let new_logic = Dolmen_type.Logic.Smtlib2 l in
+      let st = set_logic_aux ~input ~loc st new_logic in
+      st, new_logic
     | _ ->
-      warn ~input ~loc st set_logic_not_supported ()
+      let st = warn ~input ~loc st set_logic_not_supported () in
+      st, Dolmen_type.Logic.Auto
 
   (* Declarations *)
   (* ************************************************************************ *)
@@ -1800,6 +1809,8 @@ module Make
   (* Types used in Pipes *)
   (* ************************************************************************ *)
 
+  type env = Typer.env
+
   (* Used for representing typed statements *)
   type +'a stmt = {
     id : Dolmen.Std.Id.t;
@@ -1851,7 +1862,7 @@ module Make
   ]
 
   type set_info = [
-    | `Set_logic of string
+    | `Set_logic of string * Dolmen_type.Logic.t
     | `Set_info of Dolmen.Std.Statement.term
     | `Set_option of Dolmen.Std.Statement.term
   ]
@@ -1945,8 +1956,10 @@ module Make
     | `Plain t ->
       Format.fprintf fmt "@[<hov 2>plain: %a@]"
         Dolmen.Std.Term.print t
-    | `Set_logic s ->
-      Format.fprintf fmt "@[<hov 2>set-logic: %s@]" s
+    | `Set_logic (s, logic) ->
+      Format.fprintf fmt
+        "@[<hov 2>set-logic: %s =@ %a@]"
+        s Dolmen_type.Logic.print logic
     | `Set_info t ->
       Format.fprintf fmt "@[<hov 2>set-info: %a@]"
         Dolmen.Std.Term.print t
@@ -2068,8 +2081,8 @@ module Make
 
     (* Other set_logics should check whether corresponding plugins are activated ? *)
     | { S.descr = S.Set_logic s; _ } ->
-      let st = Typer.set_logic st ~input ~loc:c.S.loc s in
-      st, (simple (other_id c) c.S.loc (`Set_logic s))
+      let st, new_logic = Typer.set_logic st ~input ~loc:c.S.loc s in
+      st, (simple (other_id c) c.S.loc (`Set_logic (s, new_logic)))
 
     (* Set/Get info *)
     | { S.descr = S.Get_info s; _ } ->
