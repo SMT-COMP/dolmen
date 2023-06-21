@@ -282,25 +282,25 @@ let poly_hint (c, expected, actual) =
 
 let literal_hint b id =
   if not b then None else
-  match (id : Dolmen.Std.Id.t) with
-  | { ns = Value Integer; name = Simple _; } ->
-    Some (
-      Format.dprintf "%a" Format.pp_print_text
-        "The current logic does not include integer arithmtic")
-  | { ns = Value Rational; name = Simple _; } ->
-    Some (
-      Format.dprintf "%a" Format.pp_print_text
-        "The current logic does not include rational arithmtic")
-  | { ns = Value Real; name = Simple _; } ->
-    Some (
-      Format.dprintf "%a" Format.pp_print_text
-        "The current logic does not include real arithmtic")
-  | { ns = Term; name = Indexed { basename = s; indexes = _; }; }
-    when (String.length s >= 2 && s.[0] = 'b' && s.[1] = 'v') ->
-    Some (
-      Format.dprintf "%a" Format.pp_print_text
-        "The current logic does not include extended bitvector literals")
-  | _ -> None
+    match (id : Dolmen.Std.Id.t) with
+    | { ns = Value Integer; name = Simple _; } ->
+      Some (
+        Format.dprintf "%a" Format.pp_print_text
+          "The current logic does not include integer arithmtic")
+    | { ns = Value Rational; name = Simple _; } ->
+      Some (
+        Format.dprintf "%a" Format.pp_print_text
+          "The current logic does not include rational arithmtic")
+    | { ns = Value Real; name = Simple _; } ->
+      Some (
+        Format.dprintf "%a" Format.pp_print_text
+          "The current logic does not include real arithmtic")
+    | { ns = Term; name = Indexed { basename = s; indexes = _; }; }
+      when (String.length s >= 2 && s.[0] = 'b' && s.[1] = 'v') ->
+      Some (
+        Format.dprintf "%a" Format.pp_print_text
+          "The current logic does not include extended bitvector literals")
+    | _ -> None
 
 let poly_arg_hint _ =
   Some (
@@ -317,6 +317,11 @@ let poly_param_hint _ =
        This means that only monomorphic types can appear as
        parameters of a function type.")
 
+let bv_expected_nat_lit_hint _ =
+  Some (
+    Format.dprintf "%a" Format.pp_print_text
+      "Some bitvector functions in alt-ergo require their first argument \
+       to be a literal natural number.")
 
 (* Typing warnings *)
 (* ************************************************************************ *)
@@ -804,7 +809,7 @@ let bad_farray_arity =
   Report.Error.mk ~code ~mnemonic:"bad-farray-arity"
     ~message:(fun fmt () ->
         Format.fprintf fmt "Functional array types in Alt-Ergo expect either one or two type \
-        parameters.")
+                            parameters.")
     ~name:"Bad functional array arity" ()
 
 let expected_arith_type =
@@ -835,6 +840,15 @@ let non_linear_expression =
         Format.fprintf fmt "Non-linear expressions are forbidden by the logic.")
     ~hints:[text_hint]
     ~name:"Non linear expression in linear arithmetic logic" ()
+
+let bitvector_app_expected_nat_lit =
+  Report.Error.mk ~code ~mnemonic:"bitvector-app-expected-nat-lit"
+    ~message:(fun fmt t ->
+        Format.fprintf fmt "Expected a natural number literal as an argument, \
+                            but instead got the following untyped term:@ %a"
+          Dolmen_std.Term.print t)
+    ~hints:[bv_expected_nat_lit_hint]
+    ~name:"Bad bitvector application argument" ()
 
 let invalid_bin_bitvector_char =
   Report.Error.mk ~code ~mnemonic:"invalid-bv-bin-char"
@@ -942,9 +956,9 @@ let incorrect_sexpression =
 let unknown_error =
   Report.Error.mk ~code:Code.bug ~mnemonic:"unknown-typing-error"
     ~message:(fun fmt cstr_name ->
-      Format.fprintf fmt
-        "@[<v>Unknown typing error:@ %s@ please report upstream, ^^@]"
-        cstr_name)
+        Format.fprintf fmt
+          "@[<v>Unknown typing error:@ %s@ please report upstream, ^^@]"
+          cstr_name)
     ~name:"Unknown typing error" ()
 
 
@@ -994,6 +1008,11 @@ module Typer(State : State.S) = struct
   type warning = T.warning
   type builtin_symbols = T.builtin_symbols
 
+  type lang = [
+    | `Logic of Logic.language
+    | `Response of Response.language
+  ]
+
   let pipe = "Typer"
   let ty_state : ty_state State.key =
     State.create_key ~pipe "ty_state"
@@ -1001,27 +1020,25 @@ module Typer(State : State.S) = struct
     State.create_key ~pipe:"Model" "check_model"
   let smtlib2_forced_logic : string option State.key =
     State.create_key ~pipe "smtlib2_forced_logic"
+  let additional_builtins : (state -> lang -> T.builtin_symbols) State.key =
+    State.create_key ~pipe "additional_builtins"
 
   let init
       ?ty_state:(ty_state_value=new_state ())
       ?smtlib2_forced_logic:(smtlib2_forced_logic_value=None)
+      ?additional_builtins:(additional_builtins_value=fun _ _ _ _ -> `Not_found)
       st =
     st
     |> State.set ty_state ty_state_value
     |> State.set smtlib2_forced_logic smtlib2_forced_logic_value
+    |> State.set additional_builtins additional_builtins_value
 
-  (* Input elpers *)
+  (* Input helpers *)
   (* ************************************************************************ *)
 
   type input = [
     | `Logic of Logic.language file
     | `Response of Response.language file
-  ]
-
-  type lang = [
-    | `Missing
-    | `Logic of Logic.language
-    | `Response of Response.language
   ]
 
   let warn ~input ~loc st warn payload =
@@ -1039,7 +1056,7 @@ module Typer(State : State.S) = struct
     | `Logic f -> f.loc
     | `Response f -> f.loc
 
-  let lang_of_input (input : input) : lang =
+  let lang_of_input (input : input) : [ lang | `Missing ]=
     match input with
     | `Logic f ->
       begin match f.lang with
@@ -1121,7 +1138,7 @@ module Typer(State : State.S) = struct
       warn ~input ~loc st almost_linear msg
     | _ ->
       warn ~input ~loc st unknown_warning
-          (Obj.Extension_constructor.(name (of_val w)))
+        (Obj.Extension_constructor.(name (of_val w)))
 
   (* Report type errors *)
   (* ************************************************************************ *)
@@ -1135,7 +1152,7 @@ module Typer(State : State.S) = struct
     (* Generic error for when something was expected but not there *)
     | T.Expected (expect, got) ->
       error ~input ~loc st expect_error (expect, got)
-      (* Arity errors *)
+    (* Arity errors *)
     | T.Bad_index_arity (s, expected, actual) ->
       error ~input ~loc st bad_index_arity (s, expected, actual)
     | T.Bad_ty_arity (c, actual) ->
@@ -1213,6 +1230,11 @@ module Typer(State : State.S) = struct
     (* Alt-Ergo Functional Array errors *)
     | Ae_Arrays.Bad_farray_arity ->
       error ~input ~loc st bad_farray_arity ()
+    (* Alt-Ergo Bit-Vector errors *)
+    | Ae_Bitv.Invalid_bin_char c ->
+      error ~input ~loc st invalid_bin_bitvector_char c
+    | Ae_Bitv.Expected_nat_lit t ->
+      error ~input ~loc st bitvector_app_expected_nat_lit t
     (* Alt-Ergo Arithmetic errors *)
     | Ae_Arith.Expected_arith_type ty ->
       error ~input ~loc st expected_arith_type (ty, "")
@@ -1333,16 +1355,17 @@ module Typer(State : State.S) = struct
           Smtlib2_Reals_Ints.parse ~config:l.features.arithmetic v :: acc
       ) [] l.Dolmen_type.Logic.Smtlib2.theories
 
-  let additional_builtins = ref (fun _ _ -> `Not_found : T.builtin_symbols)
-
   let typing_env ?(attrs=[]) ~loc warnings (st : State.t) (input : input) =
-    let additional_builtins env args = !additional_builtins env args in
     let file = file_loc_of_input input in
 
     (* Match the language to determine bultins and other options *)
-    match lang_of_input input with
-    | `Missing -> assert false
-
+    let lang =
+      match lang_of_input input with
+      | `Missing -> assert false
+      | #lang as lang -> lang
+    in
+    let additional_builtins = State.get additional_builtins st st lang in
+    match lang with
     (* Dimacs & iCNF
        - these infer the declarations of their constants
          (we could declare them when the number of clauses and variables
@@ -1698,8 +1721,8 @@ module Typer(State : State.S) = struct
     | Auto -> true
 
   let check_decl st env d = function
-    | `Type_decl (c : Dolmen.Std.Expr.ty_cst) ->
-      begin match Dolmen.Std.Expr.Ty.definition c with
+    | `Type_decl (_, ty_def) ->
+      begin match (ty_def : Dolmen.Std.Expr.Ty.def option) with
         | None | Some Abstract ->
           if not (allow_abstract_type_decl st) then
             T._error env (Decl d) Illegal_decl
@@ -1734,9 +1757,9 @@ module Typer(State : State.S) = struct
         let l = T.defs ~mode env ?attrs d in
         List.map (fun typed ->
             match typed with
-            | `Type_def (id, c, vars, body) ->
+            | `Type_alias (id, c, vars, body) ->
               if not d.recursive then Dolmen.Std.Expr.Ty.alias_to c vars body;
-              `Type_def (id, c, vars, body)
+              `Type_alias (id, c, vars, body)
             | `Term_def (id, f, vars, params, body) ->
               `Term_def (id, f, vars, params, body)
             | `Instanceof (id, f, ty_args, vars, params, body) ->
@@ -1779,6 +1802,7 @@ module Make
      with type ty := Expr.ty
       and type ty_var := Expr.ty_var
       and type ty_cst := Expr.ty_cst
+      and type ty_def := Expr.ty_def
       and type term := Expr.term
       and type term_var := Expr.term_var
       and type term_cst := Expr.term_cst
@@ -1789,6 +1813,7 @@ module Make
       and type ty := Expr.ty
       and type ty_var := Expr.ty_var
       and type ty_cst := Expr.ty_cst
+      and type ty_def := Expr.ty_def
       and type term := Expr.term
       and type term_var := Expr.term_var
       and type term_cst := Expr.term_cst
@@ -1819,7 +1844,7 @@ module Make
   }
 
   type def = [
-    | `Type_def of Dolmen.Std.Id.t * Expr.ty_cst * Expr.ty_var list * Expr.ty
+    | `Type_alias of Dolmen.Std.Id.t * Expr.ty_cst * Expr.ty_var list * Expr.ty
     | `Term_def of Dolmen.Std.Id.t * Expr.term_cst * Expr.ty_var list * Expr.term_var list * Expr.term
     | `Instanceof of Dolmen.Std.Id.t * Expr.term_cst * Expr.ty list * Expr.ty_var list * Expr.term_var list * Expr.term
   ]
@@ -1829,7 +1854,7 @@ module Make
   ]
 
   type decl = [
-    | `Type_decl of Expr.ty_cst
+    | `Type_decl of Expr.ty_cst * Expr.ty_def option
     | `Term_decl of Expr.term_cst
   ]
 
@@ -1844,7 +1869,7 @@ module Make
   ]
 
   type solve = [
-    | `Solve of Expr.formula list
+    | `Solve of Expr.formula list * Expr.formula list
   ]
 
   type get_info = [
@@ -1886,8 +1911,8 @@ module Make
   let simple id loc (contents: typechecked)  = { id; loc; contents; }
 
   let print_def fmt = function
-    | `Type_def (id, c, vars, body) ->
-      Format.fprintf fmt "@[<hov 2>type-def:@ %a: %a(%a) ->@ %a@]"
+    | `Type_alias (id, c, vars, body) ->
+      Format.fprintf fmt "@[<hov 2>type-alias:@ %a: %a(%a) ->@ %a@]"
         Dolmen.Std.Id.print id Print.ty_cst c
         (Format.pp_print_list Print.ty_var) vars Print.ty body
     | `Term_def (id, c, vars, args, body) ->
@@ -1908,9 +1933,15 @@ module Make
         (Format.pp_print_list ~pp_sep Print.term_var) args
         Print.term body
 
+  let print_ty_def fmt = function
+    | None -> ()
+    | Some ty_def ->
+      Format.fprintf fmt " =@ %a" Print.ty_def ty_def
+
   let print_decl fmt = function
-    | `Type_decl c ->
-      Format.fprintf fmt "@[<hov 2>type-decl:@ %a@]" Print.ty_cst c
+    | `Type_decl (c, ty_def) ->
+      Format.fprintf fmt "@[<hov 2>type-def:@ %a%a@]"
+        Print.ty_cst c print_ty_def ty_def
     | `Term_decl c ->
       Format.fprintf fmt "@[<hov 2>term-decl:@ %a@]" Print.term_cst c
 
@@ -1929,9 +1960,10 @@ module Make
     | `Clause l ->
       Format.fprintf fmt "@[<v 2>clause:@ %a@]"
         (Format.pp_print_list Print.formula) l
-    | `Solve l ->
-      Format.fprintf fmt "@[<hov 2>solve-assuming: %a@]"
-        (Format.pp_print_list Print.formula) l
+    | `Solve (hyps, goals) ->
+      Format.fprintf fmt "@[<hov 2>solve: %a@ assuming: %a@]"
+        (Format.pp_print_list Print.formula) goals
+        (Format.pp_print_list Print.formula) hyps
     | `Get_info s ->
       Format.fprintf fmt "@[<hov 2>get-info: %s@]" s
     | `Get_option s ->
@@ -2061,9 +2093,10 @@ module Make
       st, (simple (other_id c) c.S.loc (`Plain t))
 
     (* Hypotheses and goal statements *)
-    | { S.descr = S.Prove l; _ } ->
-      let st, l = Typer.formulas st ~input ~loc:c.S.loc ~attrs:c.S.attrs l in
-      st, (simple (prove_id c) c.S.loc (`Solve l))
+    | { S.descr = S.Prove { hyps; goals }; _ } ->
+      let st, hyps = Typer.formulas st ~input ~loc:c.S.loc ~attrs:c.S.attrs hyps in
+      let st, goals = Typer.formulas st ~input ~loc:c.S.loc ~attrs:c.S.attrs goals in
+      st, (simple (prove_id c) c.S.loc (`Solve (hyps, goals)))
 
     (* Hypotheses & Goals *)
     | { S.descr = S.Clause l; _ } ->
@@ -2153,4 +2186,3 @@ module Make
     res
 
 end
-

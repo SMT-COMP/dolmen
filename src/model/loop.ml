@@ -30,6 +30,7 @@ type answer =
   | Sat of {
       parsed : parsed_model;
       model : typed_model;
+      evaluated_goals : bool located list;
       delayed : acc list Model.C.t;
     }
 
@@ -81,6 +82,10 @@ let pp_defs_loc ~file fmt (defs : Dolmen.Std.Statement.defs) =
   Format.pp_print_list
     ~pp_sep:Format.pp_print_space Dolmen.Std.Loc.fmt fmt locs
 
+let pp_located fmt { contents = _; file = _; loc; } =
+  let loc = Dolmen.Std.Loc.full_loc loc in
+  Format.fprintf fmt "%a" Dolmen.Std.Loc.fmt loc
+
 let code =
   Dolmen_loop.Code.create
     ~category:"Model"
@@ -99,8 +104,10 @@ let bad_model =
         match kind with
         | `Hyp ->
           Format.fprintf fmt "This hypothesis/assertion evaluates to false"
-        | `Goal ->
-          Format.fprintf fmt "This goal evaluates to true"
+        | `Goals evaluated_goals ->
+          Format.fprintf fmt
+            "@[<v>All of the goals at the following locations evaluated to false:@ %a@]"
+            Fmt.(list pp_located) evaluated_goals
         | `Clause ->
           Format.fprintf fmt "This assumed clause evaluates to false")
     ~name:"Incorrect model" ()
@@ -212,8 +219,9 @@ let unhandled_float_exponand_and_mantissa =
   Dolmen_loop.Report.Error.mk ~code ~mnemonic:"unhandled-float-sizes"
     ~message:(fun fmt (ew, mw) ->
         Format.fprintf fmt
-          "The following size for exponand and mantissa are not currently
-          handled by dolmen: (%d, %d)." ew mw)
+          "%a:@ (%d, %d)." Format.pp_print_text
+          "The following size for exponand and mantissa are not currently \
+           handled by dolmen" ew mw)
     ~hints:[(fun _ -> Some (Format.dprintf "%a"
         Format.pp_print_text
           "This is a current implementation limitation of dolmen. \
@@ -242,6 +250,7 @@ module Make
       and type ty := Dolmen.Std.Expr.ty
       and type ty_var := Dolmen.Std.Expr.ty_var
       and type ty_cst := Dolmen.Std.Expr.ty_cst
+      and type ty_def := Dolmen.Std.Expr.ty_def
       and type term := Dolmen.Std.Expr.term
       and type term_var := Dolmen.Std.Expr.term_var
       and type term_cst := Dolmen.Std.Expr.term_cst
@@ -307,7 +316,7 @@ module Make
   let pack_abstract_defs ~loc ~(file:  _ file) typed_defs =
     let contents =
       List.filter_map (function
-          | `Type_def _ -> None
+          | `Type_alias _ -> None
           | `Instanceof _ -> None (* TODO: warning/error ? *)
           | `Term_def (_id, cst, ty_params, term_params, body) ->
             let func = Dolmen.Std.Expr.Term.lam (ty_params, term_params) body in
@@ -316,13 +325,13 @@ module Make
     in
     { contents; loc; file; }
 
-  let record_defs st model (parsed_defs : Dolmen.Std.Statement.defs) typed_defs =
+  let record_defs st model newly_defined (parsed_defs : Dolmen.Std.Statement.defs) typed_defs =
     let file = State.get State.response_file st in
-    List.fold_left2 (fun (st, model) (parsed : Dolmen.Std.Statement.def) def ->
+    List.fold_left2 (fun (st, model, newly_defined) (parsed : Dolmen.Std.Statement.def) def ->
         let loc = Dolmen.Std.Loc.{ file = file.loc; loc = parsed.loc; } in
         match def with
-        | `Type_def _ ->
-          (State.error ~file ~loc st type_def_in_model (), model)
+        | `Type_alias _ ->
+          (State.error ~file ~loc st type_def_in_model (), model, newly_defined)
         | `Term_def (_id, cst, ty_params, term_params, body) ->
           let func = Dolmen.Std.Expr.Term.lam (ty_params, term_params) body in
           if State.get State.debug st then
@@ -336,8 +345,9 @@ module Make
               Dolmen.Std.Loc.fmt_compact (Dolmen.Std.Loc.full_loc loc)
               Dolmen.Std.Expr.Term.Const.print cst
               Value.print value;
+          let newly_defined = Model.C.add cst value newly_defined in
           let model = Model.Cst.add cst value model in
-          (st, model)
+          (st, model, newly_defined)
         | `Instanceof (_id, cst, ty_args, ty_params, term_params, body) ->
           assert (ty_params = []);
           let pp_sep fmt () = Format.fprintf fmt ", @ " in
@@ -347,11 +357,12 @@ module Make
               Dolmen.Std.Expr.Term.Const.print cst
               (Format.pp_print_list ~pp_sep Dolmen.Std.Expr.Ty.print) ty_args
               Dolmen.Std.Expr.Term.print (Dolmen.Std.Expr.Term.lam ([], term_params) body);
+          let newly_defined = Model.C.add cst Value.dummy newly_defined in
           let model = Fun.add_ad_hoc_instance model ~cst ~ty_args ~term_params ~body in
           if State.get State.debug st then
             Format.eprintf "[model][typed] %a@." Model.print model;
-          (st, model)
-      ) (st, model) parsed_defs.contents typed_defs
+          (st, model, newly_defined)
+      ) (st, model, newly_defined) parsed_defs.contents typed_defs
 
   let are_defs_declared st (defs : Dolmen.Std.Statement.defs) =
     let input = `Response (State.get State.response_file st) in
@@ -364,7 +375,7 @@ module Make
           ) defs.contents
       )
 
-  let type_model_aux ~input ?attrs st model parsed_defs =
+  let type_model_aux ~input ?attrs st model newly_defined parsed_defs =
     if State.get State.debug st then
       Format.eprintf "[model][parsed] @[<hov>%a@]@."
         Dolmen.Std.Statement.(print_group print_def) parsed_defs;
@@ -379,27 +390,30 @@ module Make
         ) model (Typer.pop_inferred_model_constants st)
     in
     (* Record the explicit definitions *)
-    let st, model = record_defs st model parsed_defs defs in
-    st, model
+    let st, model, newly_defined = record_defs st model newly_defined parsed_defs defs in
+    st, model, newly_defined
 
-  let rec type_model_defined ~input ?attrs st model = function
-    | [] -> st, model, []
+  let rec type_model_defined ~input ?attrs st model newly_defined = function
+    | [] -> st, model, newly_defined, []
     | (defs :: r) as l ->
       let st, defs_declared = are_defs_declared st defs in
       if defs_declared then
-        let st, model = type_model_aux ~input ?attrs st model defs in
-        type_model_defined ~input ?attrs st model r
+        let st, model, newly_defined =
+          type_model_aux ~input ?attrs st model newly_defined defs
+        in
+        type_model_defined ~input ?attrs st model newly_defined r
       else
-        st, model, l
+        st, model, newly_defined, l
 
-  let type_model_partial ?attrs st parsed =
+  let type_model_partial ?attrs st model parsed =
     let file = State.get State.response_file st in
     let input = `Response file in
-    let st = Typer.push ~input st 1 in
-    let st, model, parsed = type_model_defined ~input ?attrs st Model.empty parsed in
-    let st = Typer.pop st ~input 1 in
-    st, model, parsed
-
+    (* let st = Typer.push ~input st 1 in *)
+    let st, model, newly_defined, parsed =
+      type_model_defined ~input ?attrs st model Model.C.empty parsed
+    in
+    (* let st = Typer.pop st ~input 1 in *)
+    st, model, newly_defined, parsed
 
   (* Pipe function *)
   (* ************************************************************************ *)
@@ -421,9 +435,19 @@ module Make
             | Unsat -> st, Unsat loc
             | Error _ -> st, Error loc
             | Sat None ->
-              st, Sat { parsed = []; model = Model.empty; delayed = Model.C.empty; }
+              st, Sat {
+                parsed = [];
+                model = Model.empty;
+                delayed = Model.C.empty;
+                evaluated_goals = [];
+              }
             | Sat Some parsed ->
-              st, Sat { parsed; model = Model.empty; delayed = Model.C.empty; }
+              st, Sat {
+                parsed;
+                model = Model.empty;
+                delayed = Model.C.empty;
+                evaluated_goals = [];
+              }
           end
       in
       let st =
@@ -463,47 +487,51 @@ module Make
   (* Evaluation functions *)
   (* ************************************************************************ *)
 
-  let rec eval_loop st parsed model (delayed : acc list Model.C.t) (acc : acc) =
-    let st, newly_defined, parsed = type_model_partial st parsed in
-    let model = Model.disjoint_union model newly_defined in
-    let st, model, delayed = eval_newly_defined st model delayed newly_defined in
-    let st, model, delayed = eval_acc st model delayed acc in
-    st, parsed, model, delayed
+  let rec eval_loop st parsed model delayed evaluated_goals acc =
+    let st, model, newly_defined, parsed = type_model_partial st model parsed in
+    let st, model, delayed, evaluated_goals =
+      eval_newly_defined st model delayed evaluated_goals newly_defined
+    in
+    let st, model, delayed, evaluated_goals =
+      eval_acc st model delayed evaluated_goals acc
+    in
+    st, parsed, model, delayed, evaluated_goals
 
-  and eval_newly_defined st model delayed newly_defined =
+  and eval_newly_defined st model delayed evaluated_goals newly_defined =
     let newly_defined_and_needed =
       Model.C.merge (fun _cst value_opt acc_opt ->
           match value_opt, acc_opt with
             | Some _, (Some _ as res) -> res
             | None as res, _
             | Some _, (None as res) -> res
-        ) (Model.csts newly_defined) delayed
+        ) newly_defined delayed
     in
-    eval_delayed st model delayed newly_defined_and_needed
+    eval_delayed st model delayed evaluated_goals newly_defined_and_needed
 
-  and eval_delayed st model delayed to_eval =
-    Model.C.fold (fun cst acc_list (st, model, delayed) ->
+  and eval_delayed st model delayed evaluated_goals to_eval =
+    Model.C.fold (fun cst acc_list (st, model, delayed, evaluated_goals) ->
         let delayed = Model.C.remove cst delayed in
-        List.fold_left (fun (st, model, delayed) acc ->
-            eval_acc st model delayed acc
-          ) (st, model, delayed) acc_list
-      ) to_eval (st, model, delayed)
+        List.fold_left (fun (st, model, delayed, evaluated_goals) acc ->
+            eval_acc st model delayed evaluated_goals acc
+          ) (st, model, delayed, evaluated_goals) acc_list
+      ) to_eval (st, model, delayed, evaluated_goals)
 
-  and eval_acc_direct ~reraise st model delayed = function
-    | Def def -> eval_def ~reraise st model delayed def
+  and eval_acc_direct ~reraise st model delayed evaluated_goals = function
+    | Def def ->
+      eval_def ~reraise st model delayed evaluated_goals def
     | Hyp hyp ->
       let st = eval_hyp ~reraise st model hyp in
-      st, model, delayed
+      st, model, delayed, evaluated_goals
     | Goal g ->
-      let st = eval_goal ~reraise st model g in
-      st, model, delayed
+      let st, evaluated_goals = eval_goal ~reraise st model evaluated_goals g in
+      st, model, delayed, evaluated_goals
     | Clause clause ->
       let st = eval_clause ~reraise st model clause in
-      st, model, delayed
+      st, model, delayed, evaluated_goals
 
-  and eval_acc st model delayed (acc : acc) =
+  and eval_acc st model delayed evaluated_goals (acc : acc) =
     try
-      eval_acc_direct ~reraise:true st model delayed acc
+      eval_acc_direct ~reraise:true st model delayed evaluated_goals acc
     with
     | Eval.Undefined_constant c
     | Model.Partial_interpretation (c, _) ->
@@ -518,7 +546,7 @@ module Make
           | None -> Some [acc]
           | Some l -> Some (acc :: l)
         ) delayed in
-      st, model, delayed
+      st, model, delayed, evaluated_goals
 
   and eval_prop ~reraise ~file ~loc st model term =
     if State.get State.debug st then
@@ -532,9 +560,9 @@ module Make
         Value.print value;
     Value.extract_exn ~ops:Bool.ops value
 
-  and eval_def ~reraise st model delayed { file; loc; contents = defs; } =
-    let newly_defined =
-      List.fold_left (fun newly_defined (cst, func) ->
+  and eval_def ~reraise st model delayed evaluated_goals { file; loc; contents = defs; } =
+    let model, newly_defined =
+      List.fold_left (fun (model, newly_defined) (cst, func) ->
           if State.get State.debug st then begin
             Format.eprintf "[model][eval][%a] @[<hv 2>%a ->@ @[<hov>%a@]@]@."
               Dolmen.Std.Loc.fmt_compact (Dolmen.Std.Loc.full_loc loc)
@@ -548,22 +576,25 @@ module Make
               Dolmen.Std.Expr.Term.Const.print cst
               Value.print value
           end;
-        Model.Cst.add cst value newly_defined
-        ) Model.empty defs
+          let model = Model.Cst.add cst value model in
+          let newly_defined = Model.C.add cst value newly_defined in
+          model, newly_defined
+        ) (model, Model.C.empty) defs
     in
-    let model = Model.disjoint_union model newly_defined in
-    let st, model, delayed = eval_newly_defined st model delayed newly_defined in
-    (st, model, delayed)
+    let st, model, delayed, evaluated_goals =
+      eval_newly_defined st model delayed evaluated_goals newly_defined
+    in
+    (st, model, delayed, evaluated_goals)
 
   and eval_hyp ~reraise st model { file; loc; contents = hyp; } =
     let res = eval_prop ~reraise ~file ~loc st model hyp in
     if res then st else
       State.error ~file ~loc st bad_model `Hyp
 
-  and eval_goal ~reraise st model { file; loc; contents = goal; } =
+  and eval_goal ~reraise st model evaluated_goals { file; loc; contents = goal; } =
     let res = eval_prop ~reraise ~file ~loc st model goal in
-    if not res then st else
-      State.error ~file ~loc st bad_model `Goal
+    let evaluated_goals = { contents = res; file; loc; } :: evaluated_goals in
+    st, evaluated_goals
 
   and eval_clause ~reraise st model { file; loc; contents = clause; } =
     let l = List.map (eval_prop ~reraise ~file ~loc st model) clause in
@@ -578,9 +609,11 @@ module Make
     let t = State.get check_state st in
     let st, answer = get_answer ~file ~loc st t t.answer in
     match answer with
-    | Sat { parsed; model; delayed; } ->
-      let st, parsed, model, delayed = eval_loop st parsed model delayed acc in
-      let t = { t with answer = Sat { parsed; model; delayed; } } in
+    | Sat { parsed; model; delayed; evaluated_goals; } ->
+      let st, parsed, model, delayed, evaluated_goals =
+        eval_loop st parsed model delayed evaluated_goals acc
+      in
+      let t = { t with answer = Sat { parsed; model; delayed; evaluated_goals; } } in
       State.set check_state t st
     | _ -> st
 
@@ -601,26 +634,29 @@ module Make
     let clause = { file; loc; contents; } in
     check_acc st (Clause clause)
 
-  let check_solve st ~(file : _ Dolmen_loop.State.file) ~loc l =
-    let local_hyps = List.map (fun contents -> { file; loc; contents; }) l in
+  let check_solve st ~(file : _ Dolmen_loop.State.file) ~loc local_hyps local_goals =
+    (* **0** Evaluate local hyps and goals *)
     let st =
       List.fold_left (fun st local_hyp ->
-          check_acc st (Hyp local_hyp)
+          check_acc st (Hyp { file; loc; contents = local_hyp; })
         ) st local_hyps
     in
-    let t = State.get check_state st in
     let st =
-      match t.answer with
-      | Sat { parsed; model; delayed; } ->
-        (* Warn about parsed and untyped model definitions *)
+      List.fold_left (fun st local_goal ->
+          check_acc st (Goal { file; loc; contents = local_goal; })
+        ) st local_goals
+    in
+    let st =
+      match (State.get check_state st).answer with
+      | Sat { parsed; model; delayed; evaluated_goals; } ->
+        (* **1** Warn about parsed and untyped model definitions *)
         let st =
           match parsed with
           | [] -> st
           | _ :: _ -> State.warn st parsed_model (file.loc, parsed)
         in
-        (* Error out if there are any un-evaluated statements *)
-        if Model.C.is_empty delayed then st
-        else begin
+        (* **2** Error out if there are any un-evaluated statements *)
+        if not (Model.C.is_empty delayed) then begin
           let accs = Model.C.bindings delayed in
           let accs = List.concat_map (fun (c, l) ->
               List.map (fun acc -> (c, acc)) l) accs in
@@ -633,11 +669,18 @@ module Make
           | [] -> assert false
           | (_, acc) :: _ ->
             (* this call should raise an exception/error *)
-            let _ = eval_acc_direct ~reraise:false st model delayed acc in
+            let _ = eval_acc_direct ~reraise:false st model delayed evaluated_goals acc in
             assert false
+        end else begin
+          (* **3** Lastly check that at least one goal evaluated to "true" *)
+          match evaluated_goals with
+          | [] -> st
+          | l when List.exists (fun { contents; _ } -> contents) l -> st
+          | l -> State.error ~file ~loc st bad_model (`Goals l)
         end
       | _ -> st
     in
+    (* **4** Reset the state *)
     reset st
 
   (* Pipe/toplevel function *)
@@ -650,21 +693,21 @@ module Make
         let loc = Dolmen.Std.Loc.{ file = file.loc; loc = c.loc; } in
         match c.contents with
         | #Typer_Pipe.exit
-          | #Typer_Pipe.decls
-          | #Typer_Pipe.get_info
-          | #Typer_Pipe.set_info -> st
-          | #Typer_Pipe.stack_control ->
-            State.error ~file ~loc st assertion_stack_not_supported ()
-          | `Defs defs ->
-            check_defs ~file ~loc st defs
-          | `Hyp contents ->
-            check_hyps ~file ~loc st contents
-          | `Goal contents ->
-            check_goal ~file ~loc st contents
-          | `Clause contents ->
-            check_clause ~file ~loc st contents
-          | `Solve l ->
-            check_solve ~file ~loc st l
+        | #Typer_Pipe.decls
+        | #Typer_Pipe.get_info
+        | #Typer_Pipe.set_info -> st
+        | #Typer_Pipe.stack_control ->
+          State.error ~file ~loc st assertion_stack_not_supported ()
+        | `Defs defs ->
+          check_defs ~file ~loc st defs
+        | `Hyp contents ->
+          check_hyps ~file ~loc st contents
+        | `Goal contents ->
+          check_goal ~file ~loc st contents
+        | `Clause contents ->
+          check_clause ~file ~loc st contents
+        | `Solve (hyps, goals) ->
+          check_solve ~file ~loc st hyps goals
       else
         st
     in

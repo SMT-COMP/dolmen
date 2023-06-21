@@ -24,6 +24,8 @@ next
   definitions in Alt-Ergo syntax (PR #147, fixes issue #144)
 - Add support for hexadecimal floats in Alt-Ergo syntax (PR #148, fixes
   issue #145)
+- Add local goals to the `Prove` statement (PR#140)
+- Add a check-sat/prove-sat statement to ae's language (PR#140)
 
 ### Typing
 
@@ -32,7 +34,9 @@ next
 - Rename theory-specific configuration to `config` (instead of
   `arith`, `arrays`, etc..) (PR#142)
 - Add printing function for logics (PR#142)
+- Attach type definitions to type-defs (PR#157)
 - Add a proper reason for reserved builtins (PR#155)
+- Add bitvector builtins for alt-ergo's language (PR#136)
 
 ### Loop
 
@@ -41,6 +45,10 @@ next
 - Add the `Flow` module for flow checking (PR#135)
 - Add the `check` function in `typer.ml`/`typer_intf.ml`
 - Add `update` and `update_opt` in `State` (PR#156)
+- Print type definitions in the printer of typed statements (PR#157)
+- Prelude statements have been removed and replaced with prelude files (PR#160)
+- `Typer.additional_builtins` is now a `State.key` and takes the current state
+  and language as arguments (PR#160)
 
 ### Model
 

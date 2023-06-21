@@ -7,6 +7,7 @@ module type Types = sig
   type ty
   type ty_var
   type ty_cst
+  type ty_def
 
   type term
   type term_var
@@ -30,6 +31,11 @@ module type Typer = sig
     | `Response of Response.language State.file
   ]
 
+  type lang = [
+    | `Logic of Logic.language
+    | `Response of Response.language
+  ]
+
   val reset :
     state -> ?loc:Dolmen.Std.Loc.t -> unit -> state
 
@@ -51,7 +57,7 @@ module type Typer = sig
     state -> input:input -> ?loc:Dolmen.Std.Loc.t ->
     ?attrs:Dolmen.Std.Term.t list -> Dolmen.Std.Statement.defs ->
     state * [
-     | `Type_def of Dolmen.Std.Id.t * ty_cst * ty_var list * ty
+     | `Type_alias of Dolmen.Std.Id.t * ty_cst * ty_var list * ty
      | `Term_def of Dolmen.Std.Id.t * term_cst * ty_var list * term_var list * term
      | `Instanceof of Dolmen.Std.Id.t * term_cst * ty list * ty_var list * term_var list * term
     ] list
@@ -60,7 +66,7 @@ module type Typer = sig
     state -> input:input -> ?loc:Dolmen.Std.Loc.t ->
     ?attrs:Dolmen.Std.Term.t list -> Dolmen.Std.Statement.decls ->
     state * [
-      | `Type_decl of ty_cst
+      | `Type_decl of ty_cst * ty_def option
       | `Term_decl of term_cst
     ] list
 
@@ -123,17 +129,13 @@ module type Typer_Full = sig
   (** Force the typechecker to use the given logic (instead of using the one declared
       in the `set-logic` statement). *)
 
-  val init :
-    ?ty_state:ty_state ->
-    ?smtlib2_forced_logic:string option ->
-    state -> state
-
   include Typer
     with type env := env
      and type state := state
      and type ty := Dolmen.Std.Expr.ty
      and type ty_var := Dolmen.Std.Expr.ty_var
      and type ty_cst := Dolmen.Std.Expr.ty_cst
+     and type ty_def := Dolmen.Std.Expr.ty_def
      and type term := Dolmen.Std.Expr.term
      and type term_var := Dolmen.Std.Expr.term_var
      and type term_cst := Dolmen.Std.Expr.term_cst
@@ -141,16 +143,25 @@ module type Typer_Full = sig
   (** This signature includes the requirements to instantiate the {Pipes.Make:
       functor*)
 
+  val init :
+    ?ty_state:ty_state ->
+    ?smtlib2_forced_logic:string option ->
+    ?additional_builtins:(state -> lang -> builtin_symbols) ->
+    state -> state
+
+  val additional_builtins : (state -> lang -> builtin_symbols) key
+  (** Add new builtin symbols to the typechecker, depending on the current
+      language.
+
+      {b Note.} The additional builtins are never used for Dimacs and iCNF.
+
+      @before 0.9 [additional_builtins] had type [builtin_symbols ref]. *)
+
   val report_error : input:input -> state -> error -> state
   (** Report a typing error by calling the appropriate state function. *)
 
   val report_warning : input:input -> state -> warning -> state
   (** Return a typing warning by calling the appropriate state function. *)
-
-  val additional_builtins : builtin_symbols ref
-  (** This reference can be modified to parse new builtin symbols. By default no
-      additional builtin symbols are parsed. It is added for all the languages
-      except Dimacs, and iCNF. *)
 
   val pop_inferred_model_constants : state -> Dolmen.Std.Expr.term_cst list
   (** TODO:doc *)
@@ -179,7 +190,7 @@ module type S = sig
   (** Wrapper around statements. It records implicit type declarations. *)
 
   type decl = [
-    | `Type_decl of ty_cst
+    | `Type_decl of ty_cst * ty_def option
     | `Term_decl of term_cst
   ]
   (** The type of top-level type declarations. *)
@@ -190,7 +201,7 @@ module type S = sig
   (** A list of type declarations. *)
 
   type def = [
-    | `Type_def of Dolmen.Std.Id.t * ty_cst * ty_var list * ty
+    | `Type_alias of Dolmen.Std.Id.t * ty_cst * ty_var list * ty
     | `Term_def of Dolmen.Std.Id.t * term_cst * ty_var list * term_var list * term
     | `Instanceof of Dolmen.Std.Id.t * term_cst * ty list * ty_var list * term_var list * term
   ]
@@ -209,7 +220,9 @@ module type S = sig
   (** The type of top-level assertion statements *)
 
   type solve = [
-    | `Solve of formula list
+    | `Solve of formula list * formula list
+    (** [`Solve (hyps, goals)] represents a sequent with local hypotheses [hyps]
+        and local goals [goals]. *)
   ]
   (** Top-level solve instruction *)
 
